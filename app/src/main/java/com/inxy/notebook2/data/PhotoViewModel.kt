@@ -1,16 +1,12 @@
-package com.inxy.notebook2.ui.dashboard
-
+package com.inxy.notebook2.data
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import com.inxy.notebook2.data.PhotoDatabase
-import com.inxy.notebook2.data.PhotoEntity
-import com.inxy.notebook2.data.PhotoRepository
 import kotlinx.coroutines.launch
 
-class DashboardViewModel(application: Application) : AndroidViewModel(application) {
+class PhotoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = PhotoDatabase.getInstance(application)
     private val repository = PhotoRepository(application, database.photoDao())
@@ -22,15 +18,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val photoCount: LiveData<Int> = _photoCount
 
     private val _photos = MutableLiveData<List<PhotoEntity>>()
-    val photos: LiveData<List<PhotoEntity>> = _photos  // 指定了泛型类型
+    val photos: LiveData<List<PhotoEntity>> = _photos
 
     private val _error = MutableLiveData<String?>()
     val error: LiveData<String?> = _error
-
-    private val _text = MutableLiveData<String>().apply {
-        value = "这是仪表盘Fragment"
-    }
-    val text: LiveData<String> = _text
 
     init {
         observePhotos()
@@ -41,11 +32,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             repository.getAllPhotos().collect { photoList ->
                 _photos.postValue(photoList)
                 _photoCount.postValue(photoList.size)
-                _text.postValue("找到 ${photoList.size} 张照片")
             }
         }
     }
 
+    /**
+     * 刷新照片数据
+     */
     fun refreshPhotos() {
         viewModelScope.launch {
             _isLoading.value = true
@@ -60,6 +53,27 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * 只从系统读取但不保存到数据库
+     */
+    fun loadPhotosFromSystem(onResult: (List<Photo>) -> Unit) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _error.value = null
+            try {
+                val photos = repository.loadPhotosFrom2026March1()
+                onResult(photos)
+            } catch (e: Exception) {
+                _error.value = "加载照片失败: ${e.message}"
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * 删除照片
+     */
     fun deletePhoto(uri: String) {
         viewModelScope.launch {
             try {
@@ -70,6 +84,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * 格式化日期
+     */
     fun formatDate(timestamp: Long): String {
         return repository.formatDate(timestamp)
     }
