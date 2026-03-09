@@ -18,8 +18,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.inxy.notebook2.data.PhotoDatabase
+import com.inxy.notebook2.data.PhotoEntity
 import com.inxy.notebook2.databinding.FragmentHomeBinding
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 import java.util.logging.Handler
 
@@ -97,53 +103,56 @@ class HomeFragment : Fragment() {
             }
         }
     }
-
-    private fun loadImages() {
-        try {
-            val images = mutableListOf<Uri>()
-
-            val projection = arrayOf(MediaStore.Images.Media._ID)
-
-            val cursor = requireContext().contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                null,
-                null,
-                "${MediaStore.Images.Media.DATE_ADDED} DESC"
-            )
-
-            cursor?.use {
-                val column = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-
-                var count = 0
-                while (it.moveToNext() && count < 100) {
-                    val id = it.getLong(column)
-                    val uri = ContentUris.withAppendedId(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        id
-                    )
-                    images.add(uri)
-                    count++
-                }
-            }
-
-            // 打印日志查看是否获取到图片
-            if (images.isEmpty()) {
-                android.util.Log.d("HomeFragment", "没有找到图片")
-                // 可以显示一个提示
-                Toast.makeText(requireContext(), "没有找到图片", Toast.LENGTH_SHORT).show()
-            } else {
-                android.util.Log.d("HomeFragment", "找到 ${images.size} 张图片")
-            }
-            Log.e("TAG", "loadImages: $images", )
-
-            // 处理数据分组
-            processAndDisplayImages(images)
-
+    // 在 HomeFragment.kt 中添加这个方法
+    private suspend fun getPhotosFromDatabase(): List<PhotoEntity> {
+        return try {
+            val database = PhotoDatabase.getInstance(requireContext())
+            // 使用同步方法查询所有照片
+            database.photoDao().getAllPhotosSync()
         } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(requireContext(), "加载图片失败: ${e.message}", Toast.LENGTH_SHORT).show()
-            adapter.submitList(emptyList())
+            Log.e("HomeFragment", "读取数据库失败", e)
+            emptyList()
+        }
+    }
+    private fun loadImages() {
+        // 显示加载状态（如果您有ProgressBar）
+        // binding.progressBar.visibility = View.VISIBLE
+
+        // 使用 lifecycleScope 在后台线程执行数据库操作
+        lifecycleScope.launch {
+            try {
+                // 在后台线程获取数据库数据
+                val photos = withContext(Dispatchers.IO) {
+                    getPhotosFromDatabase()
+                }
+
+                if (photos.isNotEmpty()) {
+                    Log.d("HomeFragment", "从数据库读取到 ${photos.size} 张照片")
+
+                    // 处理照片数据（也在后台线程执行，因为涉及网络请求）
+                    val weeks = withContext(Dispatchers.IO) {
+                        val processCourses = ProcessCourses()
+                        processCourses.processPhotoData(photos)
+                    }
+
+                    // 回到主线程更新UI
+                    adapter.submitList(weeks)
+                    adapter.notifyDataSetChanged()
+
+                    Log.d("HomeFragment", "处理完成，生成 ${weeks.size} 周数据")
+                } else {
+                    Log.d("HomeFragment", "数据库中没有照片")
+                    Toast.makeText(requireContext(), "数据库中没有照片，请先在Dashboard扫描", Toast.LENGTH_SHORT).show()
+                    adapter.submitList(emptyList())
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(requireContext(), "加载照片失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                adapter.submitList(emptyList())
+            } finally {
+                // 隐藏加载状态
+                // binding.progressBar.visibility = View.GONE
+            }
         }
     }
 

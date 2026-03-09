@@ -135,7 +135,7 @@ class PhotoRepository(
      * 删除照片记录
      */
     suspend fun deletePhoto(uri: String) {
-        photoDao.deletePhotoByUri(uri)
+        photoDao.deleteByUri(uri)
     }
 
     /**

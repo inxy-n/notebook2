@@ -13,13 +13,17 @@ interface PhotoDao {
     suspend fun insertPhoto(photo: PhotoEntity)
 
     @Insert
-    suspend fun insertAllPhotos(photos: List<PhotoEntity>)
+    suspend fun insertAllPhotos(photos: List<PhotoEntity>)  // 方法名是 insertAllPhotos
 
     @Update
     suspend fun updatePhoto(photo: PhotoEntity)
 
     @Query("SELECT * FROM photos ORDER BY dateAdded DESC")
-    fun getAllPhotos(): Flow<List<PhotoEntity>>
+    fun getAllPhotos(): Flow<List<PhotoEntity>>  // 返回 Flow
+
+    // 添加同步查询方法（不返回Flow）
+    @Query("SELECT * FROM photos ORDER BY dateAdded DESC")
+    suspend fun getAllPhotosSync(): List<PhotoEntity>
 
     @Query("SELECT * FROM photos WHERE dateAdded >= :timestamp ORDER BY dateAdded DESC")
     fun getPhotosAfterDate(timestamp: Long): Flow<List<PhotoEntity>>
@@ -31,7 +35,7 @@ interface PhotoDao {
     suspend fun getPhotoCount(): Int
 
     @Query("DELETE FROM photos WHERE uri = :uri")
-    suspend fun deletePhotoByUri(uri: String)
+    suspend fun deleteByUri(uri: String)  // 方法名改为 deleteByUri 以匹配调用
 
     @Query("SELECT EXISTS(SELECT 1 FROM photos WHERE uri = :uri)")
     suspend fun isPhotoExists(uri: String): Boolean
