@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -16,16 +17,16 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.viewModelScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.snackbar.Snackbar
-import com.inxy.notebook2.adapter.PhotoAdapter  // 确保导入正确的适配器
+import com.inxy.notebook2.adapter.PhotoAdapter
 import com.inxy.notebook2.data.PhotoEntity
 import com.inxy.notebook2.databinding.FragmentDashboardBinding
-import com.inxy.notebook2.ui.dashboard.UploadService
+import com.inxy.notebook2.utils.UploadService
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class DashboardFragment : Fragment() {
 
@@ -37,10 +38,14 @@ class DashboardFragment : Fragment() {
     private lateinit var progressBar: ProgressBar
     private lateinit var tvEmpty: TextView
     private lateinit var fabRefresh: FloatingActionButton
-    private lateinit var fabUpload: FloatingActionButton  // 添加上传按钮引用
+    private lateinit var fabUpload: FloatingActionButton
+    private lateinit var fabSync: FloatingActionButton
     private lateinit var photoAdapter: PhotoAdapter
-    private lateinit var uploadService: UploadService  // 这个需要在初始化
+    private lateinit var uploadService: UploadService
     private var uploadDialog: AlertDialog? = null
+    private var syncDialog: AlertDialog? = null
+    private var isSyncing = false
+    private var pendingUpload = false
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -65,13 +70,13 @@ class DashboardFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         initViews()
-        // 在这里初始化 UploadService
         initUploadService()
         initViewModel()
         setupRecyclerView()
         setupObservers()
         setupClickListeners()
 
+        // 只检查权限，不自动同步
         checkPermissionAndLoad()
     }
 
@@ -80,21 +85,20 @@ class DashboardFragment : Fragment() {
         progressBar = binding.progressBar
         tvEmpty = binding.tvEmpty
         fabRefresh = binding.fabRefresh
-        fabUpload = binding.fabUpload  // 确保你的布局中有这个id
+        fabUpload = binding.fabUpload
+        fabSync = binding.fabSync
     }
 
     private fun initUploadService() {
         uploadService = UploadService(requireContext())
     }
+
     private fun initViewModel() {
         viewModel = ViewModelProvider(this)[DashboardViewModel::class.java]
     }
 
     private fun setupRecyclerView() {
-        // 使用GridLayoutManager，每行3列
         recyclerView.layoutManager = GridLayoutManager(requireContext(), 3)
-
-        // 初始化适配器（空列表）
         photoAdapter = PhotoAdapter(emptyList()) { photo ->
             showPhotoDetailsDialog(photo)
         }
@@ -102,20 +106,24 @@ class DashboardFragment : Fragment() {
     }
 
     private fun setupObservers() {
-        // 观察照片列表变化
         viewModel.photos.observe(viewLifecycleOwner) { photos: List<PhotoEntity> ->
-            // 更新现有适配器的数据，而不是创建新适配器
             photoAdapter.updateData(photos)
             updateEmptyState(photos.isEmpty())
         }
 
-        // 观察加载状态
+        viewModel.dataUpdated.observe(viewLifecycleOwner) { updated ->
+            if (!updated) {
+                Toast.makeText(requireContext(), "数据更新出错", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         viewModel.isLoading.observe(viewLifecycleOwner) { isLoading: Boolean ->
             progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
             fabRefresh.isEnabled = !isLoading
+            fabUpload.isEnabled = !isLoading
+            fabSync.isEnabled = !isLoading
         }
 
-        // 观察错误信息
         viewModel.error.observe(viewLifecycleOwner) { errorMessage: String? ->
             errorMessage?.let {
                 Snackbar.make(recyclerView, it, Snackbar.LENGTH_LONG)
@@ -124,6 +132,45 @@ class DashboardFragment : Fragment() {
                 viewModel.clearError()
             }
         }
+
+        // 观察同步进度
+        // 修改观察同步进度的逻辑
+        viewModel.syncProgress.observe(viewLifecycleOwner) { progress ->
+            updateSyncProgress(progress.current, progress.total, progress.message)
+
+            // 同步完成
+            if (progress.current == progress.total && progress.total > 0) {
+                syncDialog?.dismiss()
+                isSyncing = false
+
+                // 如果有待处理的上传任务，等待JSON更新完成
+                if (pendingUpload) {
+                    pendingUpload = false
+
+                    // 添加延迟，等待JSON文件更新完成
+                    lifecycleScope.launch {
+                        // 显示等待状态
+                        Toast.makeText(requireContext(), "同步完成，正在更新JSON...", Toast.LENGTH_SHORT).show()
+
+                        // 等待JSON更新（给数据库和文件系统一些时间）
+                        delay(1000)
+
+                        // 重新加载一次数据确保最新
+                        viewModel.loadPhotosFromDatabase()
+
+                        // 再等待一下确保LiveData更新
+                        delay(500)
+
+                        // 开始上传流程
+                        Toast.makeText(requireContext(), "开始上传JSON和图片...", Toast.LENGTH_SHORT).show()
+                        performUploadAll()
+                    }
+                } else {
+                    Toast.makeText(requireContext(), progress.message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
     }
 
     private fun setupClickListeners() {
@@ -131,9 +178,12 @@ class DashboardFragment : Fragment() {
             refreshPhotos()
         }
 
-        // 添加上传按钮（你需要先在布局中添加一个上传FAB）
-        binding.fabUpload.setOnClickListener {
+        fabUpload.setOnClickListener {
             showUploadOptionsDialog()
+        }
+
+        fabSync.setOnClickListener {
+            showSyncDialog()
         }
     }
 
@@ -146,7 +196,8 @@ class DashboardFragment : Fragment() {
 
         when {
             ContextCompat.checkSelfPermission(requireContext(), permission) == PackageManager.PERMISSION_GRANTED -> {
-                refreshPhotos()
+                // 只有权限，不自动刷新
+                // 让用户手动点击刷新按钮
             }
             else -> {
                 requestPermissionLauncher.launch(permission)
@@ -158,13 +209,14 @@ class DashboardFragment : Fragment() {
      * 显示上传选项对话框
      */
     private fun showUploadOptionsDialog() {
-        val options = arrayOf("上传所有照片", "仅上传JSON文件")
+        val options = arrayOf("上传所有照片", "仅上传JSON文件", "先同步再上传所有（JSON+图片）")
         AlertDialog.Builder(requireContext())
             .setTitle("选择上传方式")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> uploadAllPhotos()
                     1 -> uploadJsonOnly()
+                    2 -> syncThenUploadAll()  // 先同步再上传所有
                 }
             }
             .setNegativeButton("取消", null)
@@ -172,10 +224,169 @@ class DashboardFragment : Fragment() {
     }
 
     /**
-     * 上传所有照片
+     * 先同步再上传所有照片（先JSON后图片）
      */
+    private fun syncThenUploadAll() {
+        val photos = viewModel.photos.value
+        if (photos.isNullOrEmpty()) {
+            Toast.makeText(requireContext(), "没有可上传的照片", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // 显示确认对话框
+        AlertDialog.Builder(requireContext())
+            .setTitle("确认操作")
+            .setMessage("将先同步服务器上的照片到本地，然后按顺序执行：\n\n1. 上传JSON文件\n2. 上传所有照片\n\n整个过程可能需要一些时间，是否继续？")
+            .setPositiveButton("继续") { _, _ ->
+                // 开始同步
+                showSyncProgressDialog()
+                isSyncing = true
+                pendingUpload = true
+                viewModel.syncWithServer()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     /**
-     * 上传所有照片 - 现在只上传JSON中分类的照片
+     * 显示同步对话框
+     */
+    private fun showSyncDialog() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("同步服务器")
+            .setMessage("将从服务器同步照片到本地")
+            .setPositiveButton("开始同步") { _, _ ->
+                startSync()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /**
+     * 开始同步
+     */
+    private fun startSync() {
+        showSyncProgressDialog()
+        isSyncing = true
+        pendingUpload = false
+        viewModel.syncWithServer()
+    }
+
+    /**
+     * 显示同步进度对话框
+     */
+    private fun showSyncProgressDialog() {
+        val builder = AlertDialog.Builder(requireContext())
+        builder.setTitle("同步中")
+        builder.setMessage("正在连接服务器...")
+        builder.setCancelable(false)
+
+        syncDialog = builder.create()
+        syncDialog?.show()
+    }
+
+    /**
+     * 更新同步进度
+     */
+    private fun updateSyncProgress(current: Int, total: Int, message: String) {
+        syncDialog?.setMessage(message)
+    }
+
+    /**
+     * 执行上传所有照片（先JSON后图片）
+     */
+    private fun performUploadAll() {
+        val photos = viewModel.photos.value
+        if (photos.isNullOrEmpty()) {
+            Toast.makeText(requireContext(), "没有可上传的照片", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        showUploadProgressDialog("正在准备上传...")
+
+        lifecycleScope.launch {
+            // 先重新加载一次ViewModel中的数据，确保最新
+            viewModel.loadPhotosFromDatabase()
+
+            // 等待数据更新
+            delay(500)
+
+            // 第一步：先上传JSON
+            uploadService.uploadLocalJson(object : UploadService.UploadCallback {
+                override fun onProgress(current: Int, total: Int, message: String) {
+                    requireActivity().runOnUiThread {
+                        updateUploadProgress(current, total, message)
+                    }
+                }
+
+                override fun onSuccess(jsonResponse: String) {
+                    Log.d("DashboardFragment", "JSON上传成功: $jsonResponse")
+
+                    // 第二步：JSON上传成功后，开始上传图片
+                    requireActivity().runOnUiThread {
+                        updateUploadProgress(0, 1, "JSON上传成功，开始上传图片...")
+
+                        lifecycleScope.launch {
+                            delay(500)
+                            uploadImages()
+                        }
+                    }
+                }
+
+                override fun onError(error: String) {
+                    Log.e("DashboardFragment", "JSON上传失败: $error")
+                    requireActivity().runOnUiThread {
+                        uploadDialog?.dismiss()
+                        AlertDialog.Builder(requireContext())
+                            .setTitle("上传失败")
+                            .setMessage("JSON上传失败: $error\n\n图片上传已取消")
+                            .setPositiveButton("确定", null)
+                            .show()
+                    }
+                }
+            })
+        }
+    }
+
+    /**
+     * 上传图片
+     */
+    private fun uploadImages() {
+        lifecycleScope.launch {
+            uploadService.uploadPhotosBasedOnLocalJson(object : UploadService.UploadCallback {
+                override fun onProgress(current: Int, total: Int, message: String) {
+                    requireActivity().runOnUiThread {
+                        updateUploadProgress(current, total, message)
+                    }
+                }
+
+                override fun onSuccess(response: String) {
+                    requireActivity().runOnUiThread {
+                        uploadDialog?.dismiss()
+                        AlertDialog.Builder(requireContext())
+                            .setTitle("上传成功")
+                            .setMessage("✅ JSON上传成功\n✅ 图片上传成功：$response")
+                            .setPositiveButton("确定", null)
+                            .show()
+                    }
+                }
+
+                override fun onError(error: String) {
+                    requireActivity().runOnUiThread {
+                        uploadDialog?.dismiss()
+                        AlertDialog.Builder(requireContext())
+                            .setTitle("图片上传失败")
+                            .setMessage("✅ JSON已上传成功\n❌ 但图片上传失败：$error")
+                            .setPositiveButton("确定", null)
+                            .show()
+                    }
+                }
+            })
+        }
+    }
+
+    /**
+     * 上传所有照片 - 使用本地JSON
      */
     private fun uploadAllPhotos() {
         val photos = viewModel.photos.value
@@ -184,11 +395,11 @@ class DashboardFragment : Fragment() {
             return
         }
 
-        showUploadProgressDialog("正在分析照片分类...")
+        // 直接上传图片（不经过JSON上传）
+        showUploadProgressDialog("正在读取本地JSON...")
 
         lifecycleScope.launch {
-            // 使用新方法 uploadPhotosBasedOnJson
-            uploadService.uploadPhotosBasedOnJson(photos, object : UploadService.UploadCallback {
+            uploadService.uploadPhotosBasedOnLocalJson(object : UploadService.UploadCallback {
                 override fun onProgress(current: Int, total: Int, message: String) {
                     requireActivity().runOnUiThread {
                         updateUploadProgress(current, total, message)
@@ -216,17 +427,14 @@ class DashboardFragment : Fragment() {
         }
     }
 
+    /**
+     * 仅上传JSON文件 - 使用本地已生成的JSON
+     */
     private fun uploadJsonOnly() {
-        val photos = viewModel.photos.value
-        if (photos.isNullOrEmpty()) {
-            Toast.makeText(requireContext(), "没有可上传的照片", Toast.LENGTH_SHORT).show()
-            return
-        }
+        showUploadProgressDialog("正在读取本地JSON...")
 
-        showUploadProgressDialog("正在生成JSON文件...")
-
-        lifecycleScope.launch {  // 同样使用 lifecycleScope
-            uploadService.generateAndUploadJson(photos, object : UploadService.UploadCallback {
+        lifecycleScope.launch {
+            uploadService.uploadLocalJson(object : UploadService.UploadCallback {
                 override fun onProgress(current: Int, total: Int, message: String) {
                     requireActivity().runOnUiThread {
                         updateUploadProgress(current, total, message)
@@ -272,8 +480,8 @@ class DashboardFragment : Fragment() {
      */
     private fun updateUploadProgress(current: Int, total: Int, message: String) {
         uploadDialog?.setMessage(message)
-        if (current == total) {
-            uploadDialog?.setMessage("上传完成，正在处理...")
+        if (current == total && total > 0) {
+            uploadDialog?.setMessage("本阶段完成，继续下一阶段...")
         }
     }
 
@@ -307,6 +515,7 @@ class DashboardFragment : Fragment() {
             添加时间: ${viewModel.formatDate(photo.dateAdded)}
             文件大小: ${formatFileSize(photo.size)}
             路径: ${photo.filePath}
+            来源: ${if (photo.source == "system") "系统相册" else "下载目录"}
         """.trimIndent()
 
         AlertDialog.Builder(requireContext())

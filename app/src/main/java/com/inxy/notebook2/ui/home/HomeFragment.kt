@@ -1,219 +1,239 @@
 package com.inxy.notebook2.ui.home
 
 import android.Manifest
-import android.content.ContentUris
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Looper
-import android.provider.MediaStore
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.inxy.notebook2.data.PhotoDatabase
-import com.inxy.notebook2.data.PhotoEntity
 import com.inxy.notebook2.databinding.FragmentHomeBinding
+import com.inxy.notebook2.utils.LocalJsonManager
+import com.inxy.notebook2.utils.PhotoInJson
+import com.inxy.notebook2.utils.PhotosJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-import java.util.logging.Handler
+import java.io.File
 
 class HomeFragment : Fragment() {
 
     private var _binding: FragmentHomeBinding? = null
     private val binding get() = _binding!!
-    // 在 HomeFragment 中
-    private lateinit var adapter: WeekAdapter  // 改为 HomeWeekAdapter
 
-// 在 onCreateView 中
-
-    // 注册权限请求回调
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            // 权限被授予，加载图片
-            loadImages()
-        } else {
-            // 权限被拒绝
-            Toast.makeText(
-                requireContext(),
-                "需要存储权限才能显示图片",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
+    private lateinit var adapter: WeekAdapter
+    private lateinit var homeViewModel: HomeViewModel
+    private lateinit var localJsonManager: LocalJsonManager
+    private lateinit var photoDatabase: PhotoDatabase
 
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
-        val homeViewModel = ViewModelProvider(this).get(HomeViewModel::class.java)
-
+        homeViewModel = ViewModelProvider(this).get(HomeViewModel::class.java)
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
-        val root: View = binding.root
 
-        val textView: TextView = binding.textHome
-        homeViewModel.text.observe(viewLifecycleOwner) {
-            textView.text = it
-        }
+        initManagers()
+        setupRecyclerView()
 
+        // 加载本地JSON并显示
+        loadFromLocalJson()
+
+        return binding.root
+    }
+
+    private fun initManagers() {
+        localJsonManager = LocalJsonManager(requireContext())
+        photoDatabase = PhotoDatabase.getInstance(requireContext())
+    }
+
+    private fun setupRecyclerView() {
         adapter = WeekAdapter()
         binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerView.adapter = adapter
-
-        // 检查并请求权限
-        checkAndRequestPermissions()
-
-        return root
     }
 
-    private fun checkAndRequestPermissions() {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13 及以上使用 READ_MEDIA_IMAGES
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            // Android 12 及以下使用 READ_EXTERNAL_STORAGE
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-
-        when {
-            ContextCompat.checkSelfPermission(
-                requireContext(),
-                permission
-            ) == PackageManager.PERMISSION_GRANTED -> {
-                // 已经有权限，直接加载图片
-                loadImages()
-            }
-            else -> {
-                // 没有权限，请求权限
-                requestPermissionLauncher.launch(permission)
-            }
-        }
-    }
-    // 在 HomeFragment.kt 中添加这个方法
-    private suspend fun getPhotosFromDatabase(): List<PhotoEntity> {
-        return try {
-            val database = PhotoDatabase.getInstance(requireContext())
-            // 使用同步方法查询所有照片
-            database.photoDao().getAllPhotosSync()
-        } catch (e: Exception) {
-            Log.e("HomeFragment", "读取数据库失败", e)
-            emptyList()
-        }
-    }
-    private fun loadImages() {
-        // 显示加载状态（如果您有ProgressBar）
-        // binding.progressBar.visibility = View.VISIBLE
-
-        // 使用 lifecycleScope 在后台线程执行数据库操作
+    private fun loadFromLocalJson() {
         lifecycleScope.launch {
             try {
-                // 在后台线程获取数据库数据
-                val photos = withContext(Dispatchers.IO) {
-                    getPhotosFromDatabase()
+                // 1. 先检查数据库是否有数据
+                val dbCount = withContext(Dispatchers.IO) {
+                    photoDatabase.photoDao().getAllPhotosSync().size
+                }
+                Log.d("HomeFragment", "数据库中有 $dbCount 张照片")
+
+                // 2. 加载JSON
+                val photosJson = withContext(Dispatchers.IO) {
+                    localJsonManager.loadJson()
                 }
 
-                if (photos.isNotEmpty()) {
-                    Log.d("HomeFragment", "从数据库读取到 ${photos.size} 张照片")
+                if (photosJson != null) {
+                    Log.d("HomeFragment", "从本地JSON加载，共 ${photosJson.totalPhotos} 张照片")
+                    Log.d("HomeFragment", "JSON weeks 数量: ${photosJson.weeks.size}")
 
-                    // 处理照片数据（也在后台线程执行，因为涉及网络请求）
-                    val weeks = withContext(Dispatchers.IO) {
-                        val processCourses = ProcessCourses()
-                        processCourses.processPhotoData(photos)
+                    // 打印JSON结构
+                    photosJson.weeks.forEachIndexed { weekIndex, weekInJson ->
+                        Log.d("HomeFragment", "Week $weekIndex: ${weekInJson.weekName}, courses: ${weekInJson.courses.size}")
+                        weekInJson.courses.forEachIndexed { courseIndex, courseInJson ->
+                            Log.d("HomeFragment", "  Course $courseIndex: ${courseInJson.courseName}, photos: ${courseInJson.photos.size}")
+                            courseInJson.photos.forEachIndexed { photoIndex, photoInJson ->
+                                Log.d("HomeFragment", "    Photo $photoIndex: ${photoInJson.fileName}")
+                            }
+                        }
                     }
 
-                    // 回到主线程更新UI
+                    // 3. 转换JSON
+                    val weeks = withContext(Dispatchers.IO) {
+                        convertJsonToWeeks(photosJson)
+                    }
+
+                    Log.d("HomeFragment", "转换后生成 ${weeks.size} 周数据")
+
+                    // 打印转换结果
+                    weeks.forEachIndexed { index, week ->
+                        Log.d("HomeFragment", "转换后 Week $index: ${week.name}, courses: ${week.courses.size}")
+                    }
+
+                    // 4. 更新UI
                     adapter.submitList(weeks)
                     adapter.notifyDataSetChanged()
-
-                    Log.d("HomeFragment", "处理完成，生成 ${weeks.size} 周数据")
                 } else {
-                    Log.d("HomeFragment", "数据库中没有照片")
-                    Toast.makeText(requireContext(), "数据库中没有照片，请先在Dashboard扫描", Toast.LENGTH_SHORT).show()
+                    Log.d("HomeFragment", "本地JSON不存在")
+                    Toast.makeText(requireContext(), "请先在Dashboard中扫描照片", Toast.LENGTH_SHORT).show()
                     adapter.submitList(emptyList())
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
-                Toast.makeText(requireContext(), "加载照片失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                Log.e("HomeFragment", "加载失败", e)
+                Toast.makeText(requireContext(), "加载失败: ${e.message}", Toast.LENGTH_SHORT).show()
                 adapter.submitList(emptyList())
-            } finally {
-                // 隐藏加载状态
-                // binding.progressBar.visibility = View.GONE
             }
         }
     }
 
-    private fun processAndDisplayImages(images: List<Uri>) {
-        Log.d("HomeFragment", "processAndDisplayImages: 收到 ${images.size} 张图片")
+    /**
+     * 将JSON格式转换为Week列表
+     */
+    private suspend fun convertJsonToWeeks(photosJson: PhotosJson): List<Week> {
+        val weeks = mutableListOf<Week>()
 
-        if (images.isEmpty()) {
-            Log.d("HomeFragment", "images为空，提交空列表")
-            adapter.submitList(emptyList())
-            return
+        photosJson.weeks.forEach { weekInJson ->
+            val courses = mutableListOf<Course>()
+            var weekPhotoCount = 0  // 记录本周实际照片数
+
+            weekInJson.courses.forEach { courseInJson ->
+                val uris = findUrisByFileNames(courseInJson.photos)
+
+                if (uris.isNotEmpty()) {
+                    weekPhotoCount += uris.size  // 累加本周照片数
+
+                    val dayChinese = getChineseDayOfWeek(courseInJson.dayOfWeek)
+                    courses.add(
+                        Course(
+                            name = "${courseInJson.courseName} ${courseInJson.courseType} $dayChinese",
+                            images = uris,
+                            courseType = courseInJson.courseType
+
+                        )
+                    )
+                }
+            }
+
+            if (courses.isNotEmpty()) {
+                weeks.add(
+                    Week(
+                        name = "${weekInJson.weekName} ($weekPhotoCount 张)",  // 使用实际数量
+                        courses = courses,
+                        expanded = false
+                    )
+                )
+            }
         }
 
-        // 简单分组示例（处理可能不足50张的情况）
-        val week1Size = minOf(50, images.size)
-        val week1 = images.take(week1Size)
-        val week2 = if (images.size > 50) images.drop(50) else emptyList()
+        return weeks
+    }
 
-        Log.d("HomeFragment", "week1: ${week1.size}张, week2: ${week2.size}张")
+    /**
+     * 根据文件名从数据库查找URI
+     */
+    /**
+     * 根据文件名从数据库查找URI
+     */
+    private suspend fun findUrisByFileNames(photos: List<PhotoInJson>): List<Uri> {
+        val uris = mutableListOf<Uri>()
 
-        val data = mutableListOf<Week>()
+        Log.d("HomeFragment", "查找 ${photos.size} 个文件的URI")
 
-        if (week1.isNotEmpty()) {
-            val course1Size = minOf(25, week1.size)
-            val course1 = week1.take(course1Size)
-            val course2 = if (week1.size > 25) week1.drop(25) else emptyList()
-
-            data.add(Week(
-                name = "第1周 (${week1.size}张)",
-                courses = listOf(
-                    Course("必修课 (${course1.size}张)", course1),
-                    Course("选修课 (${course2.size}张)", course2)
-                ),
-                expanded = false  // 默认展开
-            ))
+        // 一次性获取所有数据库照片，避免重复查询
+        val photoEntities = withContext(Dispatchers.IO) {
+            photoDatabase.photoDao().getAllPhotosSync()
         }
 
-        // 添加 Week2（如果有数据）- 设置 expanded = true
-        if (week2.isNotEmpty()) {
-            val course1Size = minOf(25, week2.size)
-            val course1 = week2.take(course1Size)
-            val course2 = if (week2.size > 25) week2.drop(25) else emptyList()
+        Log.d("HomeFragment", "  数据库中有 ${photoEntities.size} 张照片")
 
-            data.add(Week(
-                name = "第2周 (${week2.size}张)",
-                courses = listOf(
-                    Course("必修课 (${course1.size}张)", course1),
-                    Course("选修课 (${course2.size}张)", course2)
-                ),
-                expanded = false  // 默认展开
-            ))
+        // 打印数据库中的URI供调试
+        photoEntities.take(5).forEach {
+            Log.d("HomeFragment", "    数据库URI: ${it.uri}")
         }
 
-        adapter.submitList(data)
+        photos.forEach { photoInJson ->
+            try {
+                // 方法1：尝试直接通过URI查找
+                // 构造可能的URI
+                val possibleUri = "content://media/external/images/media/${photoInJson.fileName}"
 
-        // 强制刷新
-        adapter.notifyDataSetChanged()
+                // 在数据库中查找匹配的URI
+                val match = photoEntities.find {
+                    it.uri == possibleUri ||
+                            it.uri.endsWith("/${photoInJson.fileName}") ||
+                            it.fileName == photoInJson.fileName  // 也尝试用文件名匹配
+                }
 
-        // 检查adapter中的数据
-        android.os.Handler(Looper.getMainLooper()).postDelayed({
-            Log.d("HomeFragment", "延迟检查 - adapter item count: ${adapter.itemCount}")
-        }, 500)
+                if (match != null) {
+                    uris.add(Uri.parse(match.uri))
+                    Log.d("HomeFragment", "    在数据库中找到文件: ${photoInJson.fileName} -> ${match.uri}")
+                } else {
+                    // 如果在数据库找不到，检查下载目录
+                    val downloadedFile = File(
+                        requireContext().getExternalFilesDir(null),
+                        "downloaded_photos/${photoInJson.fileName}"
+                    )
+                    if (downloadedFile.exists()) {
+                        uris.add(Uri.fromFile(downloadedFile))
+                        Log.d("HomeFragment", "    在下载目录找到文件: ${photoInJson.fileName}")
+                    } else {
+                        Log.d("HomeFragment", "    找不到文件: ${photoInJson.fileName}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("HomeFragment", "查找文件失败: ${photoInJson.fileName}", e)
+            }
+        }
+
+        Log.d("HomeFragment", "总共找到 ${uris.size} 个URI")
+        return uris
+    }
+
+    private fun getChineseDayOfWeek(day: Int): String {
+        return when (day) {
+            1 -> "周一"
+            2 -> "周二"
+            3 -> "周三"
+            4 -> "周四"
+            5 -> "周五"
+            6 -> "周六"
+            7 -> "周日"
+            else -> "周$day"
+        }
     }
 
     override fun onDestroyView() {

@@ -3,6 +3,8 @@ package com.inxy.notebook2.ui.home
 import android.net.Uri
 import android.util.Log
 import com.inxy.notebook2.data.PhotoEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.time.LocalDate
@@ -50,8 +52,8 @@ class ProcessCourses {
     /**
      * 从网络下载课表
      */
-    private suspend fun fetchScheduleFromNetwork(): List<CourseSession> {
-        return try {
+    private suspend fun fetchScheduleFromNetwork(): List<CourseSession> = withContext(Dispatchers.IO) {
+        return@withContext try {
             val request = Request.Builder()
                 .url("https://inxy.xyz/notebook/courselist/schedule.csv")
                 .addHeader("Cache-Control", "no-cache")
@@ -61,7 +63,7 @@ class ProcessCourses {
 
             if (!response.isSuccessful) {
                 Log.e("ProcessCourses", "网络请求失败: ${response.code}")
-                return emptyList()
+                return@withContext emptyList()
             }
 
             response.body?.byteStream()?.bufferedReader()?.use { reader ->
@@ -135,7 +137,7 @@ class ProcessCourses {
             if (dateTime != null) {
                 val uri = Uri.parse(photo.uri)
                 val weekNum = calculateWeekNumber(dateTime)
-                if (weekNum > 0 && weekNum <= 20) { // 限制最大周数，避免异常数据
+                if (weekNum > 0 && weekNum <= 30) { // 限制最大周数，避免异常数据
                     weekMap.getOrPut(weekNum) { mutableListOf() }.add(Pair(uri, dateTime))
                 }
             } else {
@@ -167,29 +169,34 @@ class ProcessCourses {
                     courses.add(
                         Course(
                             name = "${session.courseName} ${session.courseType} $dayChinese ",
-                            images = uris
+                            images = uris,
+                            courseType = session.courseType
+
                         )
                     )
                 }
             }
 
             // 如果课程分组为空，将所有照片放在一个默认课程中
-            if (courses.isEmpty()) {
+
+            /*if (courses.isEmpty()) {
                 courses.add(
                     Course(
-                        name = "其他照片 (${weekPhotos.size}张)",
-                        images = weekPhotos.map { it.first }
+                        name = "其他照片 ",
+                        images = weekPhotos.map { it.first },
+                        courseType = "L"
+                    )
+                )
+            }*/
+            if (!courses.isEmpty()) {
+                weeks.add(
+                    Week(
+                        name = "第 $weekNum 周",
+                        courses = courses,
+                        expanded = false
                     )
                 )
             }
-
-            weeks.add(
-                Week(
-                    name = "第 $weekNum 周 (${weekPhotos.size}张)",
-                    courses = courses,
-                    expanded = false
-                )
-            )
         }
 
         return weeks
@@ -262,8 +269,8 @@ class ProcessCourses {
             val endTime = parseTimeString(session.endTime)
 
             // 允许照片时间比课程开始时间早15分钟，或比结束时间晚15分钟
-            val adjustedStart = startTime.minusMinutes(15)
-            val adjustedEnd = endTime.plusMinutes(15)
+            val adjustedStart = startTime.minusMinutes(1)
+            val adjustedEnd = endTime.plusMinutes(1)
 
             (photoTime.isAfter(adjustedStart) || photoTime.equals(adjustedStart)) &&
                     (photoTime.isBefore(adjustedEnd) || photoTime.equals(adjustedEnd))
@@ -347,11 +354,11 @@ class ProcessCourses {
             val course2Uris = if (photoUris.size > 25) photoUris.drop(25) else emptyList()
 
             if (course1Uris.isNotEmpty()) {
-                courses.add(Course("课程1 (${course1Uris.size}张)", course1Uris))
+                courses.add(Course("课程1 (${course1Uris.size}张)", course1Uris, courseType = "L"))
             }
 
             if (course2Uris.isNotEmpty()) {
-                courses.add(Course("课程2 (${course2Uris.size}张)", course2Uris))
+                courses.add(Course("课程2 (${course2Uris.size}张)", course2Uris,courseType = "L"))
             }
 
             weeks.add(

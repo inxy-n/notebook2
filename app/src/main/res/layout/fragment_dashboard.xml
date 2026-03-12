@@ -78,6 +78,18 @@
             app:backgroundTint="?attr/colorPrimary"
             app:tint="@android:color/white"
             app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" /><!-- 在原有的fabRefresh后面添加 -->
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabSync"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:src="@android:drawable/ic_menu_upload"
+            android:rotation="180"
+            android:contentDescription="同步"
+            android:layout_marginEnd="160dp"
+            app:backgroundTint="?attr/colorPrimary"
+            app:tint="@android:color/white"
+            app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 

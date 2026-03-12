@@ -5,5 +5,6 @@ import android.net.Uri
 data class Course(
     val name: String,
     val images: List<Uri>,
-    var expanded: Boolean = false
+    var expanded: Boolean = false,
+    val courseType: String
 )
